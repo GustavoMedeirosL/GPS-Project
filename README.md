@@ -2,6 +2,8 @@
 
 Multi-criteria routing system using OpenStreetMap data via Overpass API.
 
+sdfzdf
+
 ## 🎯 Objetivo
 
 Backend Python que calcula rotas alternativas entre origem e destino, considerando diferentes critérios de otimização:
