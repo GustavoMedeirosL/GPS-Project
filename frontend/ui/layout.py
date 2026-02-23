@@ -116,63 +116,58 @@ def show_input_form() -> Dict[str, Any]:
 def show_loading(message: str = "Processando..."):
     """
     Exibe indicador de carregamento
-    
+
     Args:
         message: Mensagem a ser exibida
     """
-    with st.spinner(message):
-        return st.empty()
+    st.markdown(
+        f"""
+        <div style="display:flex; align-items:center; gap:10px;
+                    padding:10px 16px; border-radius:8px;
+                    background:#1e293b; color:#cbd5e1; font-size:15px;">
+            <span style="animation:spin 1s linear infinite; display:inline-block;">⏳</span>
+            {message}
+        </div>
+        <style>@keyframes spin{{0%{{transform:rotate(0deg)}}100%{{transform:rotate(360deg)}}}}</style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def show_loading_with_vehicle(message: str = "Processando...", vehicle_type: str = "car"):
     """
-    Exibe indicador de carregamento com ícone específico do veículo
-    Modifica o ícone que aparece no canto superior direito do Streamlit
-    
+    Exibe indicador de carregamento com ícone específico do veículo.
+
     Args:
         message: Mensagem a ser exibida
         vehicle_type: Tipo de veículo ('car', 'motorcycle', 'truck')
     """
-    # Mapear tipo de veículo para emoji
     vehicle_icons = {
         'car': '🚗',
         'motorcycle': '🏍️',
         'truck': '🚛'
     }
-    
-    # Obter emoji apropriado (padrão: carro)
     emoji = vehicle_icons.get(vehicle_type, '🚗')
-    
-    # CSS customizado para substituir o ícone de loading do Streamlit no canto superior direito
-    custom_css = f"""
-    <style>
-        /* Esconder o ícone padrão do Streamlit */
-        .stApp [data-testid="stStatusWidget"] svg {{
-            display: none !important;
-        }}
-        
-        /* Adicionar emoji personalizado */
-        .stApp [data-testid="stStatusWidget"]::before {{
-            content: "{emoji}";
-            font-size: 24px;
-            animation: spin 1s linear infinite;
-            display: inline-block;
-        }}
-        
-        /* Animação de rotação */
-        @keyframes spin {{
-            0% {{ transform: rotate(0deg); }}
-            100% {{ transform: rotate(360deg); }}
-        }}
-    </style>
-    """
-    
-    # Injetar CSS customizado
-    st.markdown(custom_css, unsafe_allow_html=True)
-    
-    # Exibir spinner com mensagem
-    with st.spinner(message):
-        return st.empty()
+
+    st.markdown(
+        f"""
+        <div style="display:flex; align-items:center; gap:12px;
+                    padding:10px 16px; border-radius:8px;
+                    background:#1e293b; color:#cbd5e1; font-size:15px;">
+            <span style="font-size:22px;
+                         animation:vehicle-bounce 0.6s ease-in-out infinite alternate;
+                         display:inline-block;">{emoji}</span>
+            {message}
+        </div>
+        <style>
+            @keyframes vehicle-bounce {{
+                from {{ transform: translateX(-4px); }}
+                to   {{ transform: translateX( 4px); }}
+            }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 
@@ -184,7 +179,7 @@ def show_error(message: str, icon: str = "🚨"):
         message: Mensagem de erro
         icon: Ícone a ser exibido
     """
-    st.error(f"{icon} {message}", icon="🚨")
+    st.error(message, icon=icon)
 
 
 def show_warning(message: str, icon: str = "⚠️"):
@@ -195,7 +190,7 @@ def show_warning(message: str, icon: str = "⚠️"):
         message: Mensagem de aviso
         icon: Ícone a ser exibido
     """
-    st.warning(f"{icon} {message}", icon="⚠️")
+    st.warning(message, icon=icon)
 
 
 def show_success(message: str, icon: str = "✅"):
@@ -206,7 +201,7 @@ def show_success(message: str, icon: str = "✅"):
         message: Mensagem de sucesso
         icon: Ícone a ser exibido
     """
-    st.success(f"{icon} {message}", icon="✅")
+    st.success(message, icon=icon)
 
 
 def show_info(message: str, icon: str = "ℹ️"):
@@ -217,7 +212,7 @@ def show_info(message: str, icon: str = "ℹ️"):
         message: Mensagem informativa
         icon: Ícone a ser exibido
     """
-    st.info(f"{icon} {message}", icon="ℹ️")
+    st.info(message, icon=icon)
 
 
 def show_route_summary(route_data: Dict[str, Any], route_type: str):

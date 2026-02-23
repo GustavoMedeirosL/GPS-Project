@@ -9,6 +9,12 @@ import requests
 from typing import Dict, Optional, Tuple
 import time
 
+try:
+    import config as _config
+    _DEFAULT_API_KEY: Optional[str] = getattr(_config, 'ORS_API_KEY', None)
+except ImportError:
+    _DEFAULT_API_KEY = None
+
 
 class ORSGeocodingService:
     """Serviço de geocodificação usando OpenRouteService API"""
@@ -160,8 +166,8 @@ class ORSGeocodingService:
             return f"Coordenadas: {lat:.4f}, {lon:.4f}"
 
 
-# Criar instância global (sem API key para uso público)
-geocoding_service = ORSGeocodingService()
+# Criar instância global usando a API key definida em config.py (se disponível)
+geocoding_service = ORSGeocodingService(api_key=_DEFAULT_API_KEY)
 
 
 def geocode_address(address: str) -> Tuple[float, float]:
