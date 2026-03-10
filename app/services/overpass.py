@@ -15,7 +15,7 @@ class OverpassService:
     
     def __init__(self):
         self.base_url = "https://overpass-api.de/api/interpreter"
-        self.timeout = 60
+        self.timeout = 180
     
     def build_query(self, bbox: Tuple[float, float, float, float]) -> str:
         """
@@ -88,7 +88,7 @@ class OverpassService:
             response = requests.post(
                 self.base_url,
                 data={"data": query},
-                timeout=self.timeout
+                timeout=self.timeout + 10  # margem extra além do timeout do servidor
             )
             response.raise_for_status()
             return response.json()

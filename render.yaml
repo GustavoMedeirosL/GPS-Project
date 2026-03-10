@@ -1,0 +1,34 @@
+services:
+  # ── 1. BACKEND: FastAPI ──────────────────────────────────────────────────────
+  - type: web
+    name: openroute-backend
+    runtime: python
+    region: oregon
+    plan: free
+    rootDir: .
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+
+  # ── 2. FRONTEND: Streamlit ───────────────────────────────────────────────────
+  - type: web
+    name: openroute-frontend
+    runtime: python
+    region: oregon
+    plan: free
+    rootDir: frontend
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11"
+      - key: BACKEND_URL
+        fromService:
+          name: openroute-backend
+          type: web
+          property: host
+      - key: ORS_API_KEY
+        sync: false   # Você define manualmente no painel do Render (segurança)
