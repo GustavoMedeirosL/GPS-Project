@@ -49,6 +49,5 @@ htmlcov/
 .env
 .env.local
 
-# Configuration files with API keys
-frontend/config.py
-config.py
+# Configuration files with API keys (apenas local, se existir)
+# frontend/config.py agora usa variáveis de ambiente — seguro para commitar
