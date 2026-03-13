@@ -30,7 +30,8 @@ else:
 
 # Timeouts (em segundos)
 GEOCODING_TIMEOUT = 10
-ROUTING_TIMEOUT = 90
+# Render free tier: cold start (~60s) + Overpass API query (~180s) = 240s de margem
+ROUTING_TIMEOUT = 240
 
 # Configurações do mapa
 DEFAULT_ZOOM = 13

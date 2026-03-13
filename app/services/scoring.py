@@ -4,14 +4,17 @@ OpenRoute Navigator - Scoring Service
 Handles route scoring and alert generation based on different criteria
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
+from math import radians
+import numpy as np
+from scipy.spatial import KDTree
 from app.models.schemas import Alert, VehicleParams, Coordinates
 from app.utils.osm_weights import (
     HIGHWAY_WEIGHTS,
     SURFACE_WEIGHTS,
     SMOOTHNESS_WEIGHTS,
     TRACKTYPE_WEIGHTS,
-    SAFETY_FACTORS,
+    SERVICE_PROXIMITY_FACTORS,
     TRUCK_RESTRICTIONS,
     DEFAULTS,
     CRITERIA_MULTIPLIERS,
@@ -20,7 +23,56 @@ from app.utils.osm_weights import (
 
 
 class ScoringService:
-    """Service for calculating edge weights and generating alerts"""
+    """
+    Service for calculating edge weights and generating alerts.
+    
+    To use automotive-service-based safety scoring, supply the lists of
+    fuel station and repair shop coordinates (from OverpassService) via
+    set_automotive_services() before calling calculate_edge_weight().
+    """
+
+    # Proximity radius (km) within which a service is considered "nearby"
+    SERVICE_RADIUS_KM: float = 0.5
+
+    def __init__(self) -> None:
+        # Raw coordinate lists — stored so callers can inspect them if needed
+        self._fuel_stations: List[Tuple[float, float]] = []
+        self._repair_shops: List[Tuple[float, float]] = []
+
+        # KDTree spatial indices built from the coordinate lists.
+        # Querying a KDTree is O(log N) vs O(N) for a linear scan.
+        # Trees are (re)built once per route request in set_automotive_services().
+        self._fuel_tree: Optional[KDTree] = None
+        self._repair_tree: Optional[KDTree] = None
+
+        # Radius in radians used for KDTree ball queries.
+        # KDTree with radian coords on unit sphere: r_rad = r_km / R_earth
+        self._radius_rad: float = self.SERVICE_RADIUS_KM / 6371.0
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def set_automotive_services(
+        self,
+        fuel_stations: List[Tuple[float, float]],
+        repair_shops: List[Tuple[float, float]]
+    ) -> None:
+        """
+        Update the service location lists and rebuild the KDTree indices.
+
+        Called once per route request after OverpassService.query_osm_data().
+        The KDTree is built here (O(S log S)) so that per-edge lookups are
+        O(log S) instead of O(S).
+
+        Args:
+            fuel_stations: List of (lat, lon) tuples for fuel stations.
+            repair_shops:  List of (lat, lon) tuples for car repair shops.
+        """
+        self._fuel_stations = fuel_stations
+        self._repair_shops = repair_shops
+        self._fuel_tree = self._build_kdtree(fuel_stations)
+        self._repair_tree = self._build_kdtree(repair_shops)
     
     def calculate_edge_weight(
         self,
@@ -97,28 +149,93 @@ class ScoringService:
         return weight - 1.0
     
     def _get_safety_weight(self, edge_data: Dict) -> float:
-        """Get safety-based weight"""
-        weight_factor = 1.0
-        
-        # Lighting factor
-        lit = edge_data.get("lit")
-        if lit:
-            lit_factor = SAFETY_FACTORS["lit"].get(lit, SAFETY_FACTORS["lit"]["default"])
-            weight_factor *= lit_factor
-        else:
-            weight_factor *= SAFETY_FACTORS["lit"]["default"]
-        
-        # Traffic signals factor
-        if edge_data.get("traffic_signals"):
-            weight_factor *= SAFETY_FACTORS["traffic_signals"]["yes"]
-        
-        # Speed penalty
-        maxspeed = edge_data.get("maxspeed", DEFAULTS["maxspeed"])
-        if maxspeed:
-            speed_factor = get_speed_penalty(maxspeed)
-            weight_factor *= speed_factor
-        
-        return weight_factor - 1.0
+        """
+        Calculate safety weight based on the presence of automotive services
+        (fuel stations and car repair shops) near the road segment.
+
+        The midpoint of the edge is used as the reference coordinate for
+        proximity checks. If no geometry is available, the weight defaults
+        to the no-service penalty.
+
+        Weight factors (from SERVICE_PROXIMITY_FACTORS):
+            - fuel_station_bonus : multiplied in when a fuel station is nearby
+            - repair_shop_bonus  : multiplied in when a repair shop is nearby
+            - no_service_penalty : multiplied in when neither service is nearby
+
+        Returns:
+            float: service_factor - 1.0  (compatible with calculate_edge_weight)
+        """
+        # Retrieve the segment midpoint from edge data (set during graph build)
+        # If not available, we cannot do proximity checks — apply a neutral weight.
+        seg_lat: Optional[float] = edge_data.get("seg_lat")
+        seg_lon: Optional[float] = edge_data.get("seg_lon")
+
+        if seg_lat is None or seg_lon is None:
+            # No positional information available: use neutral factor
+            return 0.0
+
+        # Check proximity to each service type using the pre-built KDTrees
+        fuel_nearby = self._has_service_nearby(
+            seg_lat, seg_lon, self._fuel_tree
+        )
+        repair_nearby = self._has_service_nearby(
+            seg_lat, seg_lon, self._repair_tree
+        )
+
+        service_factor = 1.0
+
+        if fuel_nearby:
+            service_factor *= SERVICE_PROXIMITY_FACTORS["fuel_station_bonus"]
+
+        if repair_nearby:
+            service_factor *= SERVICE_PROXIMITY_FACTORS["repair_shop_bonus"]
+
+        if not fuel_nearby and not repair_nearby:
+            service_factor *= SERVICE_PROXIMITY_FACTORS["no_service_penalty"]
+
+        return service_factor - 1.0
+
+    def _has_service_nearby(
+        self,
+        lat: float,
+        lon: float,
+        tree: Optional[KDTree]
+    ) -> bool:
+        """
+        Return True if any service location is within SERVICE_RADIUS_KM of
+        (lat, lon), using a pre-built KDTree for O(log S) lookup.
+
+        Args:
+            lat, lon: Query point in degrees.
+            tree: KDTree built from service coordinates in radians.
+                  If None (no services exist), returns False immediately.
+        """
+        if tree is None:
+            return False
+
+        # Convert query point to radians on unit sphere
+        point = np.array([[radians(lat), radians(lon)]])
+        matches = tree.query_ball_point(point, r=self._radius_rad)
+        return len(matches[0]) > 0
+
+    @staticmethod
+    def _build_kdtree(
+        locations: List[Tuple[float, float]]
+    ) -> Optional[KDTree]:
+        """
+        Build a KDTree from a list of (lat, lon) coordinate pairs.
+        Coordinates are converted to radians so that Euclidean distance in
+        radian-space approximates arc length on the unit sphere within small
+        areas (valid for the proximity radii used here: ≤0.5 km).
+
+        Returns None if the location list is empty (avoids TypeError in scipy).
+        """
+        if not locations:
+            return None
+        coords_rad = np.array(
+            [[radians(lat), radians(lon)] for lat, lon in locations]
+        )
+        return KDTree(coords_rad)
     
     def _get_truck_restriction_penalty(
         self,
@@ -221,15 +338,43 @@ class ScoringService:
                 location=location
             ))
         
-        # Lighting alerts
-        lit = edge_data.get("lit")
-        if lit == "no":
-            alerts.append(Alert(
-                level="yellow",
-                message="No street lighting",
-                location=location
-            ))
-        
+        # Safety / service-infrastructure alerts
+        seg_lat: Optional[float] = edge_data.get("seg_lat")
+        seg_lon: Optional[float] = edge_data.get("seg_lon")
+
+        if seg_lat is not None and seg_lon is not None:
+            fuel_nearby = self._has_service_nearby(
+                seg_lat, seg_lon, self._fuel_tree
+            )
+            repair_nearby = self._has_service_nearby(
+                seg_lat, seg_lon, self._repair_tree
+            )
+
+            if fuel_nearby and repair_nearby:
+                alerts.append(Alert(
+                    level="green",
+                    message="Service-rich segment: fuel station and repair shop nearby",
+                    location=location
+                ))
+            elif fuel_nearby:
+                alerts.append(Alert(
+                    level="green",
+                    message="Fuel station nearby",
+                    location=location
+                ))
+            elif repair_nearby:
+                alerts.append(Alert(
+                    level="green",
+                    message="Car repair service nearby",
+                    location=location
+                ))
+            else:
+                alerts.append(Alert(
+                    level="yellow",
+                    message="No fuel stations or repair services nearby",
+                    location=location
+                ))
+
         # Speed alerts
         maxspeed = edge_data.get("maxspeed")
         if maxspeed and maxspeed > 100:

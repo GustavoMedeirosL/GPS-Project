@@ -61,15 +61,26 @@ def initialize_services():
 
 def check_backend_status(backend_client: BackendClient) -> bool:
     """
-    Verifica se o back-end está disponível
-    
+    Verifica se o back-end está disponível.
+    Se não responder imediatamente, dispara o wake_up para lidar
+    com o cold start do Render (serviços gratuitos ficam inativos).
+
     Args:
         backend_client: Cliente do back-end
-        
+
     Returns:
-        True se disponível, False caso contrário
+        True se disponível (imediato ou após wake-up), False se timeout.
     """
-    return backend_client.health_check()
+    # Tentativa rápida primeiro (evita spinner desnecessário em dev local)
+    if backend_client.health_check(timeout=5):
+        return True
+
+    # Back-end não respondeu rapidamente — pode ser cold start do Render.
+    # Exibe spinner e aguarda até 90 segundos.
+    with st.spinner(
+        "⏳ Aguardando o servidor inicializar (pode levar até 60s no Render)..."
+    ):
+        return backend_client.wake_up(max_wait_seconds=90, poll_interval=5)
 
 
 def geocode_addresses(geocoding_service, origin: str, destination: str, vehicle_type: str = 'car'):
@@ -220,11 +231,13 @@ def main():
     if backend_status:
         status_placeholder.success("✅ Back-end conectado")
     else:
-        status_placeholder.error("❌ Back-end não disponível")
+        status_placeholder.error("❌ Back-end indisponível (timeout)")
         show_warning(
-            "O back-end não está respondendo. "
-            "Execute: `uvicorn app.main:app --reload`"
+            "O servidor não respondeu em 90 segundos. "
+            "Verifique o painel do Render ou tente novamente em instantes."
         )
+        # Não bloqueia: o usuário ainda pode tentar enviar o formulário,
+        # pois o back-end pode estar no meio do cold start agora.
     
     # Exibir formulário de entrada
     form_data = show_input_form()
@@ -240,13 +253,13 @@ def main():
             show_error("Por favor, preencha origem e destino")
             return
         
-        # Verificar se back-end está disponível
+        # Verificar se back-end está disponível.
+        # Se o wake_up ainda não concluiu, tentamos a rota mesmo assim —
+        # a requisição ao /route/calculate tem seu próprio timeout generoso.
         if not backend_status:
-            show_error(
-                "Back-end não disponível. Inicie o servidor primeiro: "
-                "uvicorn app.main:app --reload"
+            show_warning(
+                "O servidor pode ainda estar inicializando. Tentando mesmo assim..."
             )
-            return
         
         # Geocodificar endereços
         vehicle_type = form_data.get('vehicle_type', 'car')

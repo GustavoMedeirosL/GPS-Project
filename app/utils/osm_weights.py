@@ -92,17 +92,18 @@ TRACKTYPE_WEIGHTS = {
 }
 
 
-# Safety factors
-SAFETY_FACTORS = {
-    "lit": {
-        "yes": 0.8,     # 20% bonus for lit roads
-        "no": 1.3,      # 30% penalty for unlit roads
-        "default": 1.0
-    },
-    "traffic_signals": {
-        "yes": 0.9,     # 10% bonus for traffic signals
-        "default": 1.0
-    }
+# Service proximity factors for safety scoring
+# Routes near automotive services (fuel stations, repair shops) are considered
+# safer/more reliable for drivers — especially for longer or more rural trips.
+SERVICE_PROXIMITY_FACTORS = {
+    # Applied when a fuel station is detected nearby the route segment
+    "fuel_station_bonus": 0.85,    # 15% bonus
+
+    # Applied when a car repair shop is detected nearby the route segment
+    "repair_shop_bonus": 0.90,     # 10% bonus
+
+    # Applied when NO automotive services are found near the segment
+    "no_service_penalty": 1.25     # 25% penalty
 }
 
 

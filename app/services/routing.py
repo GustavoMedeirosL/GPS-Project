@@ -35,9 +35,16 @@ class RoutingService:
         Returns:
             List of Route objects
         """
-        # Query OSM data
+        # Query OSM data (also populates overpass.fuel_stations / repair_shops)
         bbox = self.overpass.calculate_bbox(origin, destination)
         osm_data = self.overpass.query_osm_data(bbox)
+
+        # Share automotive service locations with the scorer so that
+        # the safety criterion uses infrastructure proximity data.
+        self.scorer.set_automotive_services(
+            fuel_stations=self.overpass.fuel_stations,
+            repair_shops=self.overpass.repair_shops
+        )
         
         # Build graph
         G = self.overpass.build_graph(osm_data, origin, destination)

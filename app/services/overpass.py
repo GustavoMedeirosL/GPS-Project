@@ -16,22 +16,33 @@ class OverpassService:
     def __init__(self):
         self.base_url = "https://overpass-api.de/api/interpreter"
         self.timeout = 180
+
+        # Cached list of automotive service locations (lat, lon, type)
+        # Populated after query_osm_data() is called via query_automotive_services()
+        self.fuel_stations: List[Tuple[float, float]] = []
+        self.repair_shops: List[Tuple[float, float]] = []
     
     def build_query(self, bbox: Tuple[float, float, float, float]) -> str:
         """
-        Build Overpass QL query for road network data
-        
+        Build a single unified Overpass QL query that fetches both:
+          - Road network (ways with highway tag)
+          - Automotive services (fuel stations and car repair shops)
+
+        Merging into one request eliminates a full round-trip to the
+        Overpass server, reducing latency significantly.
+
         Args:
             bbox: Bounding box (min_lat, min_lon, max_lat, max_lon)
-            
+
         Returns:
             Overpass QL query string
         """
         min_lat, min_lon, max_lat, max_lon = bbox
-        
+
         query = f"""
         [out:json][timeout:{self.timeout}];
         (
+          // ── Road network ──────────────────────────────────────────
           way["highway"]
               ["highway"!="footway"]
               ["highway"!="path"]
@@ -41,6 +52,11 @@ class OverpassService:
               ["highway"!="construction"]
               ["highway"!="proposed"]
               ({min_lat},{min_lon},{max_lat},{max_lon});
+
+          // ── Automotive service POIs ────────────────────────────────
+          node["amenity"="fuel"]({min_lat},{min_lon},{max_lat},{max_lon});
+          node["shop"="car_repair"]({min_lat},{min_lon},{max_lat},{max_lon});
+          node["amenity"="car_repair"]({min_lat},{min_lon},{max_lat},{max_lon});
         );
         out body;
         >;
@@ -74,29 +90,76 @@ class OverpassService:
     
     def query_osm_data(self, bbox: Tuple[float, float, float, float]) -> Dict:
         """
-        Query Overpass API for OSM data
-        
+        Fetch road network AND automotive service POIs in a single Overpass
+        API request. Automotive service locations are parsed here and stored
+        in self.fuel_stations / self.repair_shops for use by ScoringService.
+
         Args:
             bbox: Bounding box for query
-            
+
         Returns:
-            Raw OSM data dictionary
+            Raw OSM data dictionary (ways + nodes for road graph builder)
         """
         query = self.build_query(bbox)
-        
+
         try:
             response = requests.post(
                 self.base_url,
                 data={"data": query},
-                timeout=self.timeout + 10  # margem extra além do timeout do servidor
+                timeout=self.timeout + 10
             )
             response.raise_for_status()
-            return response.json()
-            
+            osm_data = response.json()
+
         except requests.exceptions.Timeout:
             raise Exception("Overpass API timeout - try a smaller area")
         except requests.exceptions.RequestException as e:
             raise Exception(f"Overpass API error: {e}")
+
+        # Parse automotive service locations from the same response.
+        # POI nodes carry amenity/shop tags; road nodes do not.
+        self._extract_automotive_services(osm_data)
+
+        return osm_data
+
+    def _extract_automotive_services(self, osm_data: Dict) -> None:
+        """
+        Parse fuel stations and repair shops from an already-fetched OSM
+        response and populate self.fuel_stations / self.repair_shops.
+
+        Called internally by query_osm_data() — no extra HTTP request needed.
+
+        Args:
+            osm_data: Raw JSON response from Overpass API
+        """
+        fuel: List[Tuple[float, float]] = []
+        repair: List[Tuple[float, float]] = []
+
+        for element in osm_data.get("elements", []):
+            # Only nodes can be POIs; ways are road segments
+            if element.get("type") != "node":
+                continue
+
+            tags = element.get("tags")
+            if not tags:  # bare road nodes have no tags — skip quickly
+                continue
+
+            amenity = tags.get("amenity", "")
+            shop = tags.get("shop", "")
+
+            if amenity == "fuel":
+                fuel.append((element["lat"], element["lon"]))
+            elif amenity == "car_repair" or shop == "car_repair":
+                repair.append((element["lat"], element["lon"]))
+
+        self.fuel_stations = fuel
+        self.repair_shops = repair
+
+        print(
+            f"[OverpassService] Automotive services found: "
+            f"{len(self.fuel_stations)} fuel station(s), "
+            f"{len(self.repair_shops)} repair shop(s)."
+        )
     
     def extract_tags(self, way: Dict) -> Dict:
         """
@@ -229,9 +292,14 @@ class OverpassService:
                         node2["lat"], node2["lon"]
                     )
                     
-                    # Add edge with tags
+                    # Add edge with tags.
+                    # seg_lat / seg_lon store the midpoint of the segment so that
+                    # ScoringService can check proximity to automotive services
+                    # without needing to carry full node geometry.
                     edge_data = {
                         "distance": distance,
+                        "seg_lat": (node1["lat"] + node2["lat"]) / 2.0,
+                        "seg_lon": (node1["lon"] + node2["lon"]) / 2.0,
                         **tags
                     }
                     
