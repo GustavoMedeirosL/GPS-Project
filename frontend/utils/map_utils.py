@@ -38,14 +38,26 @@ def create_base_map(
     Returns:
         Objeto folium.Map configurado
     """
-    # Criar mapa com OpenStreetMap como camada base
+    # Criar mapa sem tile padrão para controlar a camada ativa manualmente
     m = folium.Map(
         location=[center_lat, center_lon],
         zoom_start=zoom_start,
-        tiles='OpenStreetMap',
+        tiles=None,
         control_scale=True
     )
     
+    # Adicionar Esri.WorldImagery
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        attr=(
+            'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, '
+            'Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+        ),
+        name='Esri World Imagery',
+        overlay=False,
+        control=True
+    ).add_to(m)
+
     # Adicionar Stadia.StamenTonerBlacklite
     folium.TileLayer(
         tiles='https://tiles.stadiamaps.com/tiles/stamen_toner_blacklite/{z}/{x}/{y}{r}.png',
@@ -61,15 +73,11 @@ def create_base_map(
         min_zoom=0,
         max_zoom=20
     ).add_to(m)
-    
-    # Adicionar Esri.WorldImagery
+
+    # Adicionar OpenStreetMap por último — o Folium/Leaflet ativa o último layer adicionado
     folium.TileLayer(
-        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
-        attr=(
-            'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, '
-            'Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
-        ),
-        name='Esri World Imagery',
+        tiles='OpenStreetMap',
+        name='openstreetmap',
         overlay=False,
         control=True
     ).add_to(m)
