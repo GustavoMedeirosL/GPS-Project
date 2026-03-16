@@ -23,44 +23,53 @@ class BackendClient:
             'Content-Type': 'application/json'
         })
     
-    def health_check(self, timeout: int = 8) -> bool:
+    def health_check(self, timeout: int = 8) -> tuple:
         """
         Verificação rápida de disponibilidade do back-end.
         Usa timeout curto e NÃO bloqueia o fluxo principal.
-        Retorna False se o servidor ainda estiver inicializando (cold start).
 
         Returns:
-            True se o back-end respondeu rapidamente, False caso contrário.
+            (True, "") se respondeu OK.
+            (False, motivo) em caso de falha — útil para diagnóstico.
         """
         try:
             response = self.session.get(
                 f"{self.base_url}/",
                 timeout=timeout
             )
-            return response.status_code == 200
-        except:
-            return False
+            if response.status_code == 200:
+                return True, ""
+            return False, f"HTTP {response.status_code}"
+        except requests.exceptions.ConnectionError as e:
+            return False, f"Conexão recusada / URL inválida: {e}"
+        except requests.exceptions.Timeout:
+            return False, "Timeout (servidor ainda inicializando)"
+        except Exception as e:
+            return False, f"Erro inesperado: {e}"
 
-    def wake_up(self, max_wait_seconds: int = 90, poll_interval: int = 5) -> bool:
+    def wake_up(self, max_wait_seconds: int = 90, poll_interval: int = 5) -> tuple:
         """
         Acorda o back-end do Render (cold start) esperando até max_wait_seconds.
-        Tenta a cada poll_interval segundos e retorna True quando o servidor
-        responder, ou False se o tempo esgotar.
+        Tenta a cada poll_interval segundos.
 
         Args:
             max_wait_seconds: Tempo máximo de espera (default: 90s).
             poll_interval:    Intervalo entre tentativas (default: 5s).
 
         Returns:
-            True se o servidor acordou dentro do tempo limite.
+            (True, "") se o servidor acordou.
+            (False, último_motivo) se o tempo esgotou.
         """
         elapsed = 0
+        last_detail = "Nenhuma tentativa realizada"
         while elapsed < max_wait_seconds:
-            if self.health_check(timeout=poll_interval):
-                return True
+            ok, detail = self.health_check(timeout=poll_interval)
+            if ok:
+                return True, ""
+            last_detail = detail
             time.sleep(poll_interval)
             elapsed += poll_interval
-        return False
+        return False, last_detail
     
     def calculate_route(
         self,

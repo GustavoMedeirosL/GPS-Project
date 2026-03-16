@@ -59,28 +59,39 @@ def initialize_services():
     return st.session_state.geocoding_service, st.session_state.backend_client
 
 
-def check_backend_status(backend_client: BackendClient) -> bool:
+def check_backend_status(backend_client: BackendClient, status_placeholder) -> bool:
     """
     Verifica se o back-end está disponível.
-    Se não responder imediatamente, dispara o wake_up para lidar
-    com o cold start do Render (serviços gratuitos ficam inativos).
+    Exibe na sidebar a URL sendo usada e o motivo real de falha.
 
     Args:
-        backend_client: Cliente do back-end
+        backend_client:    Cliente do back-end
+        status_placeholder: Placeholder da sidebar para atualizar status
 
     Returns:
         True se disponível (imediato ou após wake-up), False se timeout.
     """
+    # Mostra a URL sendo usada – essencial para diagnóstico no Render
+    st.sidebar.caption(f"🔗 Backend URL: `{backend_client.base_url}`")
+
     # Tentativa rápida primeiro (evita spinner desnecessário em dev local)
-    if backend_client.health_check(timeout=5):
+    ok, detail = backend_client.health_check(timeout=5)
+    if ok:
         return True
 
     # Back-end não respondeu rapidamente — pode ser cold start do Render.
     # Exibe spinner e aguarda até 90 segundos.
+    status_placeholder.warning("⏳ Aguardando back-end inicializar...")
     with st.spinner(
         "⏳ Aguardando o servidor inicializar (pode levar até 60s no Render)..."
     ):
-        return backend_client.wake_up(max_wait_seconds=90, poll_interval=5)
+        ok, detail = backend_client.wake_up(max_wait_seconds=90, poll_interval=5)
+
+    if not ok:
+        # Mostra o motivo real da falha abaixo da URL na sidebar
+        st.sidebar.error(f"❌ Detalhe do erro:\n{detail}")
+
+    return ok
 
 
 def geocode_addresses(geocoding_service, origin: str, destination: str, vehicle_type: str = 'car'):
@@ -226,7 +237,7 @@ def main():
     status_placeholder = show_sidebar_info()
     
     # Verificar status do back-end
-    backend_status = check_backend_status(backend_client)
+    backend_status = check_backend_status(backend_client, status_placeholder)
     
     if backend_status:
         status_placeholder.success("✅ Back-end conectado")
