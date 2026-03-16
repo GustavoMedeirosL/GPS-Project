@@ -80,12 +80,12 @@ def check_backend_status(backend_client: BackendClient, status_placeholder) -> b
         return True
 
     # Back-end não respondeu rapidamente — pode ser cold start do Render.
-    # Exibe spinner e aguarda até 90 segundos.
+    # Exibe spinner e aguarda até 180 segundos (deploy real leva ~80s).
     status_placeholder.warning("⏳ Aguardando back-end inicializar...")
     with st.spinner(
-        "⏳ Aguardando o servidor inicializar (pode levar até 60s no Render)..."
+        "⏳ Aguardando o servidor inicializar (cold start pode levar até 3 min no Render)..."
     ):
-        ok, detail = backend_client.wake_up(max_wait_seconds=90, poll_interval=5)
+        ok, detail = backend_client.wake_up(max_wait_seconds=180, poll_interval=5)
 
     if not ok:
         # Mostra o motivo real da falha abaixo da URL na sidebar
@@ -244,7 +244,7 @@ def main():
     else:
         status_placeholder.error("❌ Back-end indisponível (timeout)")
         show_warning(
-            "O servidor não respondeu em 90 segundos. "
+            "O servidor não respondeu em 3 minutos. "
             "Verifique o painel do Render ou tente novamente em instantes."
         )
         # Não bloqueia: o usuário ainda pode tentar enviar o formulário,
