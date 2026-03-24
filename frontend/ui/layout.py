@@ -8,15 +8,15 @@ from typing import Optional, Dict, Any, List
 
 def show_header():
     """Exibe o cabeçalho da aplicação"""
-    st.title("🗺️ OpenRoute Navigator")
+    st.title("🗺️ Cálculão")
     st.markdown("""
-    **Navegação inteligente com múltiplos critérios de rota**
+    **Navegação inteligente com múltiplos critérios de rota e estimativa de custo**
     
     Encontre a melhor rota baseada em:
     - 🚗 Velocidade (rota mais rápida)
     - 🛣️ Qualidade do pavimento
-    - 🛡️ Segurança (iluminação e condições)
-    - 🚛 Compatibilidade para caminhões
+    - 🛡️ Segurança (iluminação, oficinas mecânicas e postos de abastecimento)
+    - 🚛 Compatibilidade para caminhões (altura e peso)
     """)
     st.divider()
 
@@ -352,23 +352,25 @@ def show_sidebar_info():
         st.header("ℹ️ Sobre")
         
         st.markdown("""
-        **OpenRoute Navigator** é uma ferramenta de planejamento de rotas 
+        **Cálculão** é uma ferramenta de planejamento de rotas 
         que utiliza dados do OpenStreetMap para encontrar o melhor caminho 
-        baseado em diferentes critérios.
+        baseado em diferentes critérios, com estimativa de custo de combustível.
         
         ### Critérios disponíveis:
         
         - **Mais Rápida:** Menor tempo de viagem
         - **Melhor Pavimento:** Prioriza vias bem pavimentadas
-        - **Mais Segura:** Considera iluminação e condições da via
+        - **Mais Segura:** Considera iluminação, proximidade de oficinas mecânicas e postos de abastecimento
         - **Caminhão:** Verifica restrições de altura e peso
         
         ### Como usar:
         
-        1. Digite origem e destino
-        2. Escolha o critério de rota
-        3. Clique em "Calcular Rota"
-        4. Visualize o resultado no mapa
+        1. Digite a **origem** e o **destino**
+        2. Selecione o **combustível** do veículo
+        3. Escolha o **critério de rota**
+        4. Para caminhão, informe **altura** e **peso**
+        5. Clique em **"Calcular Rota"**
+        6. Visualize a rota no **mapa** e confira a **estimativa de custo** e comparação com **GNV**
         """)
         
         st.divider()
@@ -518,7 +520,7 @@ def show_footer():
     st.divider()
     st.markdown("""
     <div style='text-align: center; color: #666; padding: 20px;'>
-        <p>OpenRoute Navigator MVP • Desenvolvido com Streamlit e Folium</p>
+        <p>Cálculão • Desenvolvido com Streamlit e Folium</p>
         <p>Dados: OpenStreetMap • API: OpenRouteService</p>
     </div>
     """, unsafe_allow_html=True)

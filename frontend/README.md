@@ -1,4 +1,4 @@
-# OpenRoute Navigator - Guia do Front-End
+# Cálculão - Guia do Front-End
 
 ## 🚀 Início Rápido
 
@@ -32,8 +32,9 @@ frontend/
 ├── app.py                      # Aplicação principal Streamlit
 ├── services/
 │   ├── __init__.py
-│   ├── ors_geocoding.py       # Serviço de geocodificação
-│   └── backend_client.py      # Cliente da API back-end
+│   ├── ors_geocoding.py       # Serviço de geocodificação (com extração de estado)
+│   ├── backend_client.py      # Cliente da API back-end
+│   └── fuel_service.py        # Estimativa de custo com combustível e GNV
 ├── ui/
 │   ├── __init__.py
 │   └── layout.py              # Componentes de interface
@@ -57,7 +58,15 @@ frontend/
   - 🚗 Mais Rápida
   - 🛣️ Melhor Pavimento
   - 🛡️ Mais Segura
-  - 🚛 Compatível com Caminhão
+  - 🚛 Compatível com Caminhão (com altura e peso)
+
+### Estimativa de Custo com Combustível
+- Detecta automaticamente o **estado** de origem via geocodificação
+- Consulta preços reais da **ANP** (Agência Nacional de Petróleo)
+- Suporta: Gasolina Comum, Gasolina Aditivada, Diesel Comum, Diesel S10, Álcool (Etanol)
+- Calcula a **quantidade estimada** e o **custo total** da rota
+- Compara com o custo usando **GNV** (Gás Natural Veicular)
+- Exibe a **economia percentual** ao usar GNV quando disponível
 
 ### Visualização Interativa
 - Mapas Folium integrados
@@ -70,7 +79,7 @@ frontend/
 - Formulário simples e direto
 - Feedback visual durante processamento
 - Mensagens claras de erro
-- Comparação de rotas
+- Comparação de rotas e custo de combustível
 
 ---
 
@@ -106,23 +115,32 @@ backend_client = BackendClient(base_url="http://seu-servidor:porta")
    - Exemplo: "UFRN, Natal, RN"
    - Exemplo: "Ponta Negra, Natal, RN"
 
-2. **Selecione o critério de rota**
-   - Mais Rápida
-   - Melhor Pavimento
-   - Mais Segura
-   - Compatível com Caminhão
+2. **Selecione o combustível** do seu veículo
+   - ⛽ Gasolina Comum
+   - ⛽ Gasolina Aditivada
+   - 🚛 Diesel Comum
+   - 🚛 Diesel S10
+   - 🌿 Álcool (Etanol)
 
-3. **Para caminhões**, informe:
+3. **Selecione o critério de rota**
+   - 🚗 Mais Rápida
+   - 🛣️ Melhor Pavimento
+   - 🛡️ Mais Segura
+   - 🚛 Compatível com Caminhão
+
+4. **Para caminhões**, informe:
    - Altura (metros)
    - Peso (toneladas)
 
-4. **Clique em "Calcular Rota"**
+5. **Clique em "Calcular Rota"**
 
-5. **Visualize o resultado**:
-   - Resumo da rota
-   - Alertas e avisos
-   - Mapa interativo
-   - Comparação entre rotas
+6. **Visualize o resultado**:
+   - Resumo da rota selecionada
+   - Alertas e avisos no trajeto
+   - Mapa interativo com todas as rotas
+   - Comparação entre critérios
+   - **Estimativa de custo** com o combustível escolhido
+   - **Comparação com GNV** e economia percentual
 
 ---
 
@@ -192,23 +210,26 @@ Edite `frontend/ui/layout.py` para customizar:
 
 ## 🧪 Exemplos de Uso
 
-### Exemplo 1: Rota em Natal/RN
+### Exemplo 1: Rota rápida com estimativa de custo
 
 **Origem:** UFRN, Natal, RN  
 **Destino:** Ponta Negra, Natal, RN  
-**Critério:** Mais Rápida
+**Combustível:** Gasolina Comum  
+**Critério:** Mais Rápida  
+➡️ O app exibirá o custo estimado em gasolina e a comparação com GNV para o RN.
 
-### Exemplo 2: Rota com coordenadas
+### Exemplo 2: Rota mais segura com álcool
 
-Você também pode usar coordenadas diretamente:
-
-**Origem:** -5.7945, -35.2110  
-**Destino:** -5.8822, -35.1767
+**Origem:** Shopping Midway Mall, Natal, RN  
+**Destino:** Aeroporto de Natal, RN  
+**Combustível:** Álcool (Etanol)  
+**Critério:** Mais Segura  
 
 ### Exemplo 3: Rota para caminhão
 
 **Origem:** Porto de Natal, RN  
 **Destino:** Zona Industrial, Natal, RN  
+**Combustível:** Diesel S10  
 **Critério:** Compatível com Caminhão  
 **Altura:** 4.2 m  
 **Peso:** 28 ton
@@ -290,9 +311,10 @@ map_obj = create_simple_route_map(...)
 4. **Modo offline** com mapas pré-baixados
 5. **Compartilhamento** de rotas via URL
 6. **Múltiplos waypoints** (paradas intermediárias)
-7. **Estimativa de tempo** de viagem
-8. **Consumo de combustível** estimado
+7. **Estimativa de tempo** de viagem em tempo real
+8. **Consumo personalizado** por modelo de veículo
+9. **Posto de combustível** mais barato no trajeto
 
 ---
 
-**Desenvolvido com ❤️ usando Streamlit + Folium + FastAPI**
+**Desenvolvido com ❤️ usando Streamlit + Folium + FastAPI + ANP Fuel Prices API**

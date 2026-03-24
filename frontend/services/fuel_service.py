@@ -9,7 +9,8 @@ Integra com a API de preços ANP (gas-prices-api-project.onrender.com) para:
 
 import requests
 import logging
-from typing import Optional, Dict, Any
+import time
+from typing import Optional, Dict, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +109,51 @@ CONSUMO_MEDIO: Dict[str, float] = {
 # ---------------------------------------------------------------------------
 # Funções públicas
 # ---------------------------------------------------------------------------
+
+def health_check(timeout: int = 8) -> Tuple[bool, str]:
+    """
+    Verifica se a API de preços ANP está disponível.
+
+    Returns:
+        (True, "") se respondeu OK.
+        (False, motivo) em caso de falha.
+    """
+    try:
+        response = requests.get(f"{GAS_PRICES_API_URL}/combustiveis", timeout=timeout)
+        if response.status_code == 200:
+            return True, ""
+        return False, f"HTTP {response.status_code}"
+    except requests.exceptions.ConnectionError as e:
+        return False, f"Conexão recusada / URL inválida: {e}"
+    except requests.exceptions.Timeout:
+        return False, "Timeout (servidor ainda inicializando)"
+    except Exception as e:  # pylint: disable=broad-except
+        return False, f"Erro inesperado: {e}"
+
+
+def wake_up(max_wait_seconds: int = 180, poll_interval: int = 5) -> Tuple[bool, str]:
+    """
+    Acorda a API de preços ANP no Render (cold start), aguardando até
+    max_wait_seconds antes de desistir.
+
+    Args:
+        max_wait_seconds: Tempo máximo de espera em segundos (default: 180s).
+        poll_interval:    Intervalo entre tentativas em segundos (default: 5s).
+
+    Returns:
+        (True, "") se o servidor acordou.
+        (False, último_motivo) se o tempo esgotou.
+    """
+    elapsed = 0
+    last_detail = "Nenhuma tentativa realizada"
+    while elapsed < max_wait_seconds:
+        ok, detail = health_check(timeout=poll_interval)
+        if ok:
+            return True, ""
+        last_detail = detail
+        time.sleep(poll_interval)
+        elapsed += poll_interval
+    return False, last_detail
 
 def normalize_state_to_uf(state_text: Optional[str]) -> Optional[str]:
     """

@@ -1,5 +1,5 @@
 """
-OpenRoute Navigator - Front-End Principal
+Cálculão - Front-End Principal
 Aplicação Streamlit para visualização de rotas com múltiplos critérios
 """
 
@@ -7,6 +7,7 @@ import streamlit as st
 from streamlit_folium import folium_static
 import sys
 import os
+import threading
 
 # Adicionar diretório frontend ao path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -37,7 +38,7 @@ from services import fuel_service
 
 # Configuração da página
 st.set_page_config(
-    page_title="OpenRoute Navigator",
+    page_title="Cálculão",
     page_icon="🗺️",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -46,18 +47,32 @@ st.set_page_config(
 
 def initialize_services():
     """
-    Inicializa os serviços necessários
-    
+    Inicializa os serviços necessários e dispara o warm-up das APIs
+    remotas em background (evita cold start blocking).
+
     Returns:
         Tuple com (geocoding_service, backend_client)
     """
-    # Verificar se já existem na sessão
     if 'geocoding_service' not in st.session_state:
         st.session_state.geocoding_service = ORSGeocodingService(api_key=config.ORS_API_KEY)
-    
+
     if 'backend_client' not in st.session_state:
         st.session_state.backend_client = BackendClient(base_url=config.BACKEND_URL)
-    
+
+    # Dispara o wake-up da API de preços ANP em background na primeira carga,
+    # para que o cold start do Render não atrase a consulta de combustível.
+    if 'fuel_api_warmup_done' not in st.session_state:
+        st.session_state.fuel_api_warmup_done = False
+        st.session_state.fuel_api_ok = False
+
+        def _warmup_fuel_api():
+            ok, _ = fuel_service.wake_up(max_wait_seconds=180, poll_interval=5)
+            st.session_state.fuel_api_ok = ok
+            st.session_state.fuel_api_warmup_done = True
+
+        thread = threading.Thread(target=_warmup_fuel_api, daemon=True)
+        thread.start()
+
     return st.session_state.geocoding_service, st.session_state.backend_client
 
 
@@ -251,8 +266,15 @@ def main():
             "O servidor não respondeu em 3 minutos. "
             "Verifique o painel do Render ou tente novamente em instantes."
         )
-        # Não bloqueia: o usuário ainda pode tentar enviar o formulário,
-        # pois o back-end pode estar no meio do cold start agora.
+
+    # Exibir status da API de preços ANP na sidebar
+    with st.sidebar:
+        if not st.session_state.get('fuel_api_warmup_done', False):
+            st.info("⏳ API de preços ANP inicializando...", icon="⛽")
+        elif st.session_state.get('fuel_api_ok', False):
+            st.success("✅ API de preços conectada", icon="⛽")
+        else:
+            st.warning("⚠️ API de preços indisponível", icon="⛽")
     
     # Exibir formulário de entrada
     form_data = show_input_form()
