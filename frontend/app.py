@@ -29,8 +29,10 @@ from ui.layout import (
     show_route_summary,
     show_all_routes_comparison,
     show_sidebar_info,
-    show_footer
+    show_footer,
+    show_fuel_comparison,
 )
+from services import fuel_service
 
 
 # Configuração da página
@@ -96,30 +98,32 @@ def check_backend_status(backend_client: BackendClient, status_placeholder) -> b
 
 def geocode_addresses(geocoding_service, origin: str, destination: str, vehicle_type: str = 'car'):
     """
-    Geocodifica origem e destino
-    
+    Geocodifica origem e destino.
+    Para a origem, também extrai o estado (UF) da resposta do geocoder.
+
     Args:
         geocoding_service: Serviço de geocoding
         origin: Endereço de origem
         destination: Endereço de destino
         vehicle_type: Tipo de veículo ('car', 'motorcycle', 'truck')
-        
+
     Returns:
-        Tuple com ((origin_lat, origin_lon), (dest_lat, dest_lon)) ou None se houver erro
+        Tuple com ((origin_lat, origin_lon), (dest_lat, dest_lon), estado_uf) ou None se houver erro
     """
     try:
-        # Geocodificar origem
+        # Geocodificar origem — usa método extendido para capturar estado
         show_loading_with_vehicle("Localizando origem...", vehicle_type)
-        origin_coords = geocoding_service.geocode(origin)
+        origin_lat, origin_lon, state_raw = geocoding_service.geocode_with_state(origin)
+        estado_uf = fuel_service.normalize_state_to_uf(state_raw)
         show_success(f"Origem encontrada: {origin}")
-        
-        # Geocodificar destino
+
+        # Geocodificar destino — método padrão (só precisamos do estado da origem)
         show_loading_with_vehicle("Localizando destino...", vehicle_type)
         dest_coords = geocoding_service.geocode(destination)
         show_success(f"Destino encontrado: {destination}")
-        
-        return origin_coords, dest_coords
-        
+
+        return (origin_lat, origin_lon), dest_coords, estado_uf
+
     except ValueError as e:
         show_error(f"Erro de geocodificação: {str(e)}")
         return None
@@ -279,7 +283,7 @@ def main():
         if coords_result is None:
             return
         
-        origin_coords, dest_coords = coords_result
+        origin_coords, dest_coords, estado_uf = coords_result
         
         # Calcular rotas
         result = calculate_routes(backend_client, form_data, origin_coords, dest_coords)
@@ -315,7 +319,18 @@ def main():
         
         # Exibir mapa
         display_map(origin_coords, dest_coords, routes, origin, destination)
-        
+
+        # ---- Estimativa de custo com combustível --------------------------------
+        fuel_key = form_data.get('fuel_type', 'gasolina_comum')
+        distance_km = selected_route.get('distance_km', 0.0) if selected_route else 0.0
+
+        st.divider()
+        with st.spinner("⛽ Consultando preços de combustível..."):
+            comparison = fuel_service.build_cost_comparison(distance_km, fuel_key, estado_uf)
+
+        show_fuel_comparison(comparison)
+        # -------------------------------------------------------------------------
+
         # Opção para mostrar dados brutos
         with st.expander("🔍 Ver dados brutos da resposta"):
             st.json(result)
