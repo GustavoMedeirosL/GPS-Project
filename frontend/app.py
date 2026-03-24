@@ -47,8 +47,12 @@ st.set_page_config(
 
 def initialize_services():
     """
-    Inicializa os serviços necessários e dispara o warm-up das APIs
-    remotas em background (evita cold start blocking).
+    Inicializa os serviços necessários e dispara o warm-up de AMBAS as
+    APIs remotas em background (evita cold start bloqueante).
+
+    As duas threads são iniciadas simultaneamente na primeira carga:
+      • openroute-backend.onrender.com  → wake-up do back-end de rotas
+      • gas-prices-api-project.onrender.com → wake-up da API de preços ANP
 
     Returns:
         Tuple com (geocoding_service, backend_client)
@@ -59,8 +63,21 @@ def initialize_services():
     if 'backend_client' not in st.session_state:
         st.session_state.backend_client = BackendClient(base_url=config.BACKEND_URL)
 
-    # Dispara o wake-up da API de preços ANP em background na primeira carga,
-    # para que o cold start do Render não atrase a consulta de combustível.
+    # ── Wake-up do BACK-END (openroute-backend.onrender.com) ─────────────────
+    if 'backend_warmup_done' not in st.session_state:
+        st.session_state.backend_warmup_done = False
+        st.session_state.backend_warmup_ok = False
+
+        def _warmup_backend():
+            ok, _ = st.session_state.backend_client.wake_up(
+                max_wait_seconds=180, poll_interval=5
+            )
+            st.session_state.backend_warmup_ok = ok
+            st.session_state.backend_warmup_done = True
+
+        threading.Thread(target=_warmup_backend, daemon=True).start()
+
+    # ── Wake-up da API de preços ANP (gas-prices-api-project.onrender.com) ───
     if 'fuel_api_warmup_done' not in st.session_state:
         st.session_state.fuel_api_warmup_done = False
         st.session_state.fuel_api_ok = False
@@ -70,45 +87,42 @@ def initialize_services():
             st.session_state.fuel_api_ok = ok
             st.session_state.fuel_api_warmup_done = True
 
-        thread = threading.Thread(target=_warmup_fuel_api, daemon=True)
-        thread.start()
+        threading.Thread(target=_warmup_fuel_api, daemon=True).start()
 
     return st.session_state.geocoding_service, st.session_state.backend_client
 
 
 def check_backend_status(backend_client: BackendClient, status_placeholder) -> bool:
     """
-    Verifica se o back-end está disponível.
-    Exibe na sidebar a URL sendo usada e o motivo real de falha.
+    Lê o resultado do warm-up do back-end já iniciado em background.
+
+    Se o warm-up ainda não terminou, exibe status de espera mas NÃO bloqueia
+    a thread principal — o formulário continua disponível.
 
     Args:
         backend_client:    Cliente do back-end
         status_placeholder: Placeholder da sidebar para atualizar status
 
     Returns:
-        True se disponível (imediato ou após wake-up), False se timeout.
+        True se o back-end já respondeu OK, False caso contrário.
     """
     # Mostra a URL sendo usada – essencial para diagnóstico no Render
     st.sidebar.caption(f"🔗 Backend URL: `{backend_client.base_url}`")
 
-    # Tentativa rápida primeiro (evita spinner desnecessário em dev local)
-    ok, detail = backend_client.health_check(timeout=5)
-    if ok:
+    warmup_done = st.session_state.get('backend_warmup_done', False)
+    warmup_ok   = st.session_state.get('backend_warmup_ok',   False)
+
+    if not warmup_done:
+        # Ainda aguardando — não bloqueia, apenas informa
+        status_placeholder.warning("⏳ Back-end inicializando em background...")
+        return False
+
+    if warmup_ok:
         return True
 
-    # Back-end não respondeu rapidamente — pode ser cold start do Render.
-    # Exibe spinner e aguarda até 180 segundos (deploy real leva ~80s).
-    status_placeholder.warning("⏳ Aguardando back-end inicializar...")
-    with st.spinner(
-        "⏳ Aguardando o servidor inicializar (cold start pode levar até 3 min no Render)..."
-    ):
-        ok, detail = backend_client.wake_up(max_wait_seconds=180, poll_interval=5)
-
-    if not ok:
-        # Mostra o motivo real da falha abaixo da URL na sidebar
-        st.sidebar.error(f"❌ Detalhe do erro:\n{detail}")
-
-    return ok
+    # Warm-up terminou mas falhou — mostra diagnóstico
+    status_placeholder.error("❌ Back-end não respondeu (timeout)")
+    return False
 
 
 def geocode_addresses(geocoding_service, origin: str, destination: str, vehicle_type: str = 'car'):
@@ -255,13 +269,15 @@ def main():
     # Mostrar sidebar com informações
     status_placeholder = show_sidebar_info()
     
-    # Verificar status do back-end
+    # Verificar status do back-end (lê resultado do warm-up em background)
     backend_status = check_backend_status(backend_client, status_placeholder)
-    
+
     if backend_status:
         status_placeholder.success("✅ Back-end conectado")
+    elif not st.session_state.get('backend_warmup_done', False):
+        # Warm-up ainda em andamento — não exibe erro, só aguarda
+        status_placeholder.info("⏳ Conectando ao back-end...")
     else:
-        status_placeholder.error("❌ Back-end indisponível (timeout)")
         show_warning(
             "O servidor não respondeu em 3 minutos. "
             "Verifique o painel do Render ou tente novamente em instantes."
