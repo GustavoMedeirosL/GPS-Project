@@ -5,6 +5,9 @@ Cliente para comunicação com o back-end FastAPI do OpenRoute Navigator
 import requests
 from typing import Dict, Optional, List, Any
 import time
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class BackendClient:
@@ -26,31 +29,40 @@ class BackendClient:
     def health_check(self, timeout: int = 8) -> tuple:
         """
         Verificação rápida de disponibilidade do back-end.
-        Usa timeout curto e NÃO bloqueia o fluxo principal.
+        Usa GET / com Cache-Control: no-store e timeout curto.
+        NÃO bloqueia o fluxo principal.
 
         Returns:
             (True, "") se respondeu OK.
             (False, motivo) em caso de falha — útil para diagnóstico.
         """
+        url = f"{self.base_url}/"
         try:
+            logger.debug("[BackendClient] health_check → GET %s (timeout=%ds)", url, timeout)
             response = self.session.get(
-                f"{self.base_url}/",
-                timeout=timeout
+                url,
+                timeout=timeout,
+                headers={"Cache-Control": "no-store"},
             )
             if response.status_code == 200:
+                logger.debug("[BackendClient] health_check OK (HTTP 200)")
                 return True, ""
+            logger.warning("[BackendClient] health_check falhou: HTTP %d", response.status_code)
             return False, f"HTTP {response.status_code}"
         except requests.exceptions.ConnectionError as e:
+            logger.warning("[BackendClient] health_check: conexão recusada — %s", e)
             return False, f"Conexão recusada / URL inválida: {e}"
         except requests.exceptions.Timeout:
+            logger.info("[BackendClient] health_check: timeout (servidor inicializando)")
             return False, "Timeout (servidor ainda inicializando)"
         except Exception as e:
+            logger.error("[BackendClient] health_check: erro inesperado — %s", e)
             return False, f"Erro inesperado: {e}"
 
     def wake_up(self, max_wait_seconds: int = 90, poll_interval: int = 5) -> tuple:
         """
         Acorda o back-end do Render (cold start) esperando até max_wait_seconds.
-        Tenta a cada poll_interval segundos.
+        Dispara GET leves em paralelo com a UI — nunca bloqueia o thread principal.
 
         Args:
             max_wait_seconds: Tempo máximo de espera (default: 90s).
@@ -60,15 +72,36 @@ class BackendClient:
             (True, "") se o servidor acordou.
             (False, último_motivo) se o tempo esgotou.
         """
+        logger.info(
+            "[BackendClient] Iniciando wake-up → %s (max=%ds, poll=%ds)",
+            self.base_url, max_wait_seconds, poll_interval,
+        )
         elapsed = 0
+        attempt = 0
         last_detail = "Nenhuma tentativa realizada"
         while elapsed < max_wait_seconds:
+            attempt += 1
             ok, detail = self.health_check(timeout=poll_interval)
             if ok:
+                logger.info(
+                    "[BackendClient] Back-end acordou após %ds (%d tentativa(s)).",
+                    elapsed, attempt,
+                )
                 return True, ""
             last_detail = detail
+            logger.info(
+                "[BackendClient] Tentativa %d/%d falhou (%ds decorridos): %s",
+                attempt,
+                max_wait_seconds // poll_interval,
+                elapsed,
+                detail,
+            )
             time.sleep(poll_interval)
             elapsed += poll_interval
+        logger.warning(
+            "[BackendClient] Back-end não respondeu após %ds. Último erro: %s",
+            max_wait_seconds, last_detail,
+        )
         return False, last_detail
     
     def calculate_route(

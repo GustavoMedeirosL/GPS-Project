@@ -8,6 +8,7 @@ from streamlit_folium import folium_static
 import sys
 import os
 import threading
+import requests
 
 # Adicionar diretório frontend ao path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -70,7 +71,8 @@ def initialize_services():
 
         def _warmup_backend():
             ok, _ = st.session_state.backend_client.wake_up(
-                max_wait_seconds=180, poll_interval=5
+                max_wait_seconds=config.WAKEUP_MAX_WAIT,
+                poll_interval=config.WAKEUP_POLL_INTERVAL,
             )
             st.session_state.backend_warmup_ok = ok
             st.session_state.backend_warmup_done = True
@@ -83,7 +85,10 @@ def initialize_services():
         st.session_state.fuel_api_ok = False
 
         def _warmup_fuel_api():
-            ok, _ = fuel_service.wake_up(max_wait_seconds=180, poll_interval=5)
+            ok, _ = fuel_service.wake_up(
+                max_wait_seconds=config.WAKEUP_MAX_WAIT,
+                poll_interval=config.WAKEUP_POLL_INTERVAL,
+            )
             st.session_state.fuel_api_ok = ok
             st.session_state.fuel_api_warmup_done = True
 
@@ -191,20 +196,47 @@ def calculate_routes(backend_client, form_data, origin_coords, dest_coords):
             weight=form_data.get('weight'),
             timeout=config.ROUTING_TIMEOUT
         )
-        
+
         return result
-        
+
     except ValueError as e:
         show_error(f"Erro de validação: {str(e)}")
         return None
-    except ConnectionError as e:
-        show_error(f"Erro de conexão com back-end: {str(e)}")
+
+    except (ConnectionError, requests.exceptions.ConnectionError):
+        # Retry automático: se o warm-up ainda não concluiu, aguarda até
+        # WAKEUP_POLL_INTERVAL*6 segundos extras e tenta mais uma vez.
+        warmup_done = st.session_state.get('backend_warmup_done', True)
+        if not warmup_done:
+            retry_wait = config.WAKEUP_POLL_INTERVAL * 6  # 30s por padrão
+            show_warning(
+                f"⏳ Back-end ainda inicializando. Nova tentativa em {retry_wait}s..."
+            )
+            import time
+            time.sleep(retry_wait)
+            try:
+                show_loading_with_vehicle("Nova tentativa...", vehicle_type)
+                result = backend_client.calculate_route(
+                    origin_lat, origin_lon,
+                    dest_lat, dest_lon,
+                    vehicle_type=vehicle_type,
+                    height=form_data.get('height'),
+                    weight=form_data.get('weight'),
+                    timeout=config.ROUTING_TIMEOUT
+                )
+                return result
+            except Exception as retry_err:
+                show_error(f"Erro após nova tentativa: {str(retry_err)}")
+                return None
+        show_error("Erro de conexão com back-end. Verifique se o servidor está em execução.")
         show_warning("Verifique se o servidor está em execução: uvicorn app.main:app --reload")
         return None
+
     except TimeoutError as e:
         show_error(f"Timeout ao calcular rotas: {str(e)}")
         show_info("Tente usar coordenadas mais próximas ou aguarde alguns minutos.")
         return None
+
     except Exception as e:
         show_error(f"Erro inesperado: {str(e)}")
         return None

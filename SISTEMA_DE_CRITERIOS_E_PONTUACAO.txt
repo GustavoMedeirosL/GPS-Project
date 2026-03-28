@@ -1,0 +1,486 @@
+================================================================================
+  VISÃO GERAL
+================================================================================
+
+O sistema de roteamento do Cálculão é um GPS multicriterial. Isso significa
+que, para cada solicitação de rota, o sistema não calcula apenas um único
+caminho — ele calcula MÚLTIPLAS rotas ao mesmo tempo, cada uma otimizada
+para um objetivo diferente.
+
+Os critérios disponíveis são:
+
+  1. Mais Rápida (fastest)
+  2. Melhor Superfície (best_surface)
+  3. Mais Segura (safest)
+  4. Compatível com Caminhão (truck_compatible) — apenas para veículos pesados
+
+O usuário escolhe qual critério prefere. O sistema exibe a rota correspondente
+no mapa e uma tabela comparando todas as rotas calculadas.
+
+================================================================================
+  PARTE 1 — COMO OS DADOS DO MAPA SÃO OBTIDOS
+================================================================================
+
+Antes de calcular qualquer rota, o sistema precisa dos dados das ruas.
+Isso é feito pelo OverpassService (arquivo: app/services/overpass.py).
+
+PASSO A PASSO:
+
+1. O sistema recebe as coordenadas de origem e destino (latitude/longitude).
+
+2. Calcula uma "bounding box" (caixa delimitadora), que é um retângulo
+   geográfico que engloba origem, destino e uma margem de ~5,5 km ao redor
+   (padding de 0.05 graus).
+
+3. Envia UMA ÚNICA consulta à Overpass API (API pública do OpenStreetMap)
+   pedindo simultaneamente:
+     a) Todas as vias (ruas/estradas) dentro da bounding box
+     b) Todos os postos de combustível da área (amenity=fuel)
+     c) Todas as oficinas mecânicas da área (shop=car_repair / amenity=car_repair)
+
+   Algumas vias são automaticamente excluídas da consulta:
+     - Calçadas (footway)
+     - Trilhas/caminhos de pedestres (path)
+     - Escadarias (steps)
+     - Ciclovias (cycleway)
+     - Caminhos para cavalos (bridleway)
+     - Vias em construção (construction)
+     - Vias propostas mas não construídas (proposed)
+
+4. Com os dados retornados, o sistema monta um GRAFO de ruas usando a
+   biblioteca NetworkX. Cada cruzamento é um NÓ e cada trecho de rua entre
+   dois cruzamentos é uma ARESTA (edge) do grafo.
+
+5. As coordenadas dos postos de combustível e oficinas mecânicas são
+   armazenadas separadamente para serem usadas na pontuação de segurança.
+
+6. Origem e destino são conectados ao grafo ligando-os aos 5 nós de rua
+   mais próximos (com arestas especiais chamadas "connector").
+
+================================================================================
+  PARTE 2 — ATRIBUTOS DE UMA ARESTA (TRECHO DE RUA)
+================================================================================
+
+Cada trecho de rua no grafo carrega os seguintes atributos extraídos do
+OpenStreetMap:
+
+  - highway    : Tipo da via (ex: motorway, primary, residential, track...)
+  - surface    : Tipo de superfície (ex: asphalt, gravel, dirt, mud...)
+  - smoothness : Qualidade do pavimento (ex: excellent, good, bad, horrible...)
+  - maxspeed   : Velocidade máxima em km/h
+  - maxheight  : Altura máxima permitida em metros (restrição de altura)
+  - maxweight  : Peso máximo permitido em toneladas (restrição de peso)
+  - hgv        : Permissão para veículos pesados (no, designated, destination...)
+  - access     : Nível de acesso (private, delivery, destination...)
+  - oneway     : Se a rua é de mão única
+  - distance   : Comprimento do trecho em quilômetros (calculado via Haversine)
+  - seg_lat    : Latitude do ponto médio do trecho (para cálculo de proximidade)
+  - seg_lon    : Longitude do ponto médio do trecho (para cálculo de proximidade)
+
+================================================================================
+  PARTE 3 — O SISTEMA DE PONTUAÇÃO (ScoringService)
+================================================================================
+
+Arquivo central: app/services/scoring.py
+Tabelas de pesos: app/utils/osm_weights.py
+
+O coração do sistema é a função `calculate_edge_weight()`. Ela recebe um
+trecho de rua (aresta) e um critério de roteamento, e retorna um PESO numérico.
+
+  PREMISSA FUNDAMENTAL:
+  Peso MENOR = caminho MELHOR. O algoritmo de menor caminho (Dijkstra)
+  sempre vai preferir arestas com peso menor.
+
+------------------------------------------------------------
+  3.1 FÓRMULA GERAL DE PONTUAÇÃO
+------------------------------------------------------------
+
+Para cada aresta, o peso é calculado assim:
+
+  peso_total = distancia × M_distancia
+             × (1 + peso_highway  × M_highway)
+             × (1 + peso_surface  × M_surface)
+             × (1 + peso_smooth   × M_smooth)
+             × (1 + peso_safety   × M_safety)
+
+Onde:
+  - distancia       = comprimento real do trecho em km
+  - peso_highway    = penalidade pelo tipo de via
+  - peso_surface    = penalidade pela qualidade da superfície
+  - peso_smooth     = penalidade pela suavidade do pavimento
+  - peso_safety     = penalidade/bônus pela proximidade de serviços automotivos
+  - M_xxx           = multiplicador do critério para aquele componente
+
+Os multiplicadores M_xxx são definidos por critério. Eles controlam
+QUANTO cada componente importa para cada objetivo de rota.
+
+Exemplo prático:
+  No critério "fastest", M_safety = 0.0 → segurança não influencia o peso.
+  No critério "safest",  M_safety = 3.0 → segurança tem peso 3× maior.
+
+------------------------------------------------------------
+  3.2 COMPONENTE: TIPO DE VIA (Highway Weight)
+------------------------------------------------------------
+
+Arquivo: HIGHWAY_WEIGHTS em osm_weights.py
+
+Cada tipo de via recebe um fator base. O peso efetivo é (fator - 1.0), ou
+seja, rodovias principais têm penalidade próxima de zero e trilhas têm
+penalidade alta.
+
+  Tipo de Via             | Fator  | Penalidade (fator - 1)
+  ------------------------|--------|------------------------
+  motorway (autoestrada)  | 1.0    | 0.0  (melhor possível)
+  motorway_link           | 1.1    | 0.1
+  trunk (rodovia federal) | 1.2    | 0.2
+  trunk_link              | 1.3    | 0.3
+  primary (via primária)  | 1.4    | 0.4
+  primary_link            | 1.5    | 0.5
+  secondary               | 1.6    | 0.6
+  secondary_link          | 1.7    | 0.7
+  tertiary                | 1.8    | 0.8
+  tertiary_link           | 1.9    | 0.9
+  unclassified            | 2.0    | 1.0
+  residential             | 2.1    | 1.1
+  living_street           | 2.5    | 1.5
+  service                 | 3.0    | 2.0
+  track (terra batida)    | 5.0    | 4.0
+  path (trilha)           | 10.0   | 9.0
+  footway (calçada)       | 15.0   | 14.0
+  (desconhecido/padrão)   | 2.5    | 1.5
+
+  → Quanto mais "estradão", menor a penalidade, mais o algoritmo prefere
+    aquela via para passar.
+
+------------------------------------------------------------
+  3.3 COMPONENTE: SUPERFÍCIE (Surface Weight)
+------------------------------------------------------------
+
+Arquivo: SURFACE_WEIGHTS em osm_weights.py
+
+Avalia o material da via. O peso efetivo é (fator - 1.0).
+
+  Superfície              | Fator  | Categoria
+  ------------------------|--------|--------------------
+  asphalt (asfalto)       | 1.0    | Excelente (sem penalidade)
+  concrete (concreto)     | 1.0    | Excelente
+  paved (pavimentada)     | 1.1    | Excelente
+  concrete:plates         | 1.3    | Boa
+  paving_stones (pedras)  | 1.4    | Boa
+  compacted (compactado)  | 2.0    | Moderada
+  fine_gravel (cascalho fino)| 2.2 | Moderada
+  gravel (cascalho)       | 3.0    | Ruim
+  unpaved (não paviment.) | 3.5    | Ruim
+  dirt (terra)            | 4.0    | Ruim
+  ground (chão batido)    | 4.5    | Ruim
+  grass (grama)           | 5.0    | Muito ruim
+  sand (areia)            | 6.0    | Muito ruim
+  mud (lama)              | 8.0    | Péssima
+  (padrão/desconhecido)   | 2.0    | Moderada
+
+  ATENÇÃO: Se a via não possui tag de superfície (dado ausente no OSM),
+  a penalidade é ZERO — o sistema assume neutralidade, não punição.
+
+------------------------------------------------------------
+  3.4 COMPONENTE: SUAVIDADE DO PAVIMENTO (Smoothness Weight)
+------------------------------------------------------------
+
+Arquivo: SMOOTHNESS_WEIGHTS em osm_weights.py
+
+Avalia o estado de conservação da via, independente do material.
+O peso efetivo é (fator - 1.0).
+
+  Suavidade               | Fator   | Descrição
+  ------------------------|---------|----------------------------
+  excellent               | 1.0     | Perfeito (sem penalidade)
+  good                    | 1.2     | Bom
+  intermediate            | 1.5     | Razoável
+  bad                     | 3.0     | Ruim — gera alerta amarelo
+  very_bad                | 5.0     | Muito ruim — gera alerta amarelo
+  horrible                | 8.0     | Horrível — gera alerta vermelho
+  very_horrible           | 10.0    | Péssimo — gera alerta vermelho
+  impassable              | 100.0   | Intransitável — virtualmente bloqueado
+  (padrão/desconhecido)   | 1.5     | Razoável
+
+  ATENÇÃO: Se a via não possui tag de suavidade, a penalidade também é ZERO.
+
+------------------------------------------------------------
+  3.5 COMPONENTE: SEGURANÇA — PROXIMIDADE A SERVIÇOS (Safety Weight)
+------------------------------------------------------------
+
+Este é o componente mais sofisticado e exclusivo do sistema.
+
+A lógica: um trecho de rua é considerado MAIS SEGURO se há postos de
+combustível e/ou oficinas mecânicas próximos a ele. Em caso de pane ou
+emergência, o motorista tem suporte próximo.
+
+COMO FUNCIONA:
+
+1. Para cada aresta (trecho de rua), o sistema pega seu ponto médio
+   (seg_lat, seg_lon).
+
+2. Verifica se há algum posto de combustível a menos de 500 metros
+   desse ponto médio.
+
+3. Verifica se há alguma oficina mecânica a menos de 500 metros
+   desse ponto médio.
+
+4. A verificação usa uma estrutura de dados chamada KDTree (da biblioteca
+   scipy), que é uma "árvore de busca espacial". Em vez de comparar
+   cada ponto com todos os serviços (busca linear O(N)), o KDTree permite
+   encontrar serviços próximos em tempo O(log N) — muito mais rápido.
+
+   As coordenadas são convertidas para radianos antes de entrar na KDTree,
+   porque a distância euclidiana em radianos aproxima a distância em arco
+   de círculo para pequenas distâncias (até ~0.5 km, o erro é desprezível).
+
+5. Com base no resultado da verificação, aplica um dos seguintes fatores:
+
+   SITUAÇÃO                          | FATOR | EFEITO NO PESO
+   ----------------------------------|-------|----------------------------
+   Posto de combustível próximo      | 0.85  | -15% no peso (bônus)
+   Oficina mecânica próxima          | 0.90  | -10% no peso (bônus)
+   Ambos presentes                   | 0.85 × 0.90 = 0.765 | -23.5%
+   Nenhum serviço próximo            | 1.25  | +25% no peso (penalidade)
+
+   Nota: os fatores se multiplicam. Se o trecho tem tanto um posto quanto
+   uma oficina, ele recebe os dois bônus simultaneamente (fator 0.765).
+
+6. O peso de segurança retornado é: fator - 1.0
+   Exemplos:
+     - Com ambos os serviços: 0.765 - 1.0 = -0.235  (bônus negativo)
+     - Sem nenhum serviço:    1.25  - 1.0 =  0.25   (penalidade positiva)
+
+   Como o multiplicador M_safety só é relevante no critério "safest" (= 3.0),
+   a penalidade de segurança só afeta significativamente esse critério.
+
+================================================================================
+  PARTE 4 — OS QUATRO CRITÉRIOS DE ROTEAMENTO
+================================================================================
+
+Arquivo: CRITERIA_MULTIPLIERS em osm_weights.py
+
+Cada critério define quais componentes da pontuação importam e quanto.
+
+------------------------------------------------------------
+  4.1 MAIS RÁPIDA (fastest)
+------------------------------------------------------------
+
+Objetivo: encontrar o caminho mais direto e rápido.
+
+  Componente   | Multiplicador | Impacto
+  -------------|---------------|----------------------------------
+  Distância    | 1.0           | Peso base (sempre presente)
+  Tipo de via  | 0.5           | Moderado — prefere rodovias
+  Superfície   | 0.1           | Mínimo — qualidade não importa muito
+  Suavidade    | 0.1           | Mínimo — conservação não importa muito
+  Segurança    | 0.0           | ZERO — serviços próximos não contam
+
+  Resultado: a rota mais curta em distância percorrendo preferencialmente
+  vias de maior capacidade (autoestradas, rodovias federais). A qualidade
+  do pavimento e a proximidade de serviços são quase irrelevantes.
+
+------------------------------------------------------------
+  4.2 MELHOR SUPERFÍCIE (best_surface)
+------------------------------------------------------------
+
+Objetivo: minimizar o desgaste do veículo, priorizar conforto de viagem.
+
+  Componente   | Multiplicador | Impacto
+  -------------|---------------|----------------------------------
+  Distância    | 1.0           | Peso base
+  Tipo de via  | 0.3           | Baixo — tipo da via é secundário
+  Superfície   | 2.0           | ALTO — material da pista importa muito
+  Suavidade    | 2.0           | ALTO — conservação importa muito
+  Segurança    | 0.1           | Quase nulo
+
+  Resultado: o sistema vai preferir fortemente qualquer via com asfalto ou
+  concreto e bem conservada, mesmo que seja um desvio maior em distância.
+  Vias de terra, cascalho ou mal conservadas são fortemente evitadas.
+
+------------------------------------------------------------
+  4.3 MAIS SEGURA (safest)
+------------------------------------------------------------
+
+Objetivo: garantir que o motorista sempre tenha suporte próximo ao longo de
+toda a rota — postos de combustível e oficinas mecânicas.
+
+  Componente   | Multiplicador | Impacto
+  -------------|---------------|----------------------------------
+  Distância    | 1.0           | Peso base
+  Tipo de via  | 0.5           | Moderado
+  Superfície   | 0.5           | Moderado
+  Suavidade    | 0.5           | Moderado
+  Segurança    | 3.0           | MUITO ALTO — serviços próximos importam muito
+
+  Resultado: o sistema vai construir uma rota que, na medida do possível,
+  percorra trechos onde há postos e oficinas a no máximo 500 metros.
+  Trechos sem qualquer serviço próximo recebem penalidade de +25% no peso,
+  multiplicada por 3.0 → penalidade real de até +75% no custo do trecho.
+  Essa rota pode ser mais comprida em distância, mas é a mais "assistida".
+
+------------------------------------------------------------
+  4.4 COMPATÍVEL COM CAMINHÃO (truck_compatible)
+------------------------------------------------------------
+
+Objetivo: garantir que vias com restrições físicas e legais para veículos
+pesados sejam completamente evitadas.
+
+  Componente   | Multiplicador | Impacto
+  -------------|---------------|----------------------------------
+  Distância    | 1.0           | Peso base
+  Tipo de via  | 1.0           | Alto — tipo de via importa para caminhões
+  Superfície   | 1.5           | Alto — superfície importa (veículo pesado)
+  Suavidade    | 1.0           | Alto
+  Segurança    | 0.5           | Moderado
+
+  ALÉM DOS MULTIPLICADORES, este critério aplica verificações extras:
+
+  → BLOQUEIO ABSOLUTO (peso = infinito → aresta removida do grafo):
+    - Altura do veículo > limite de altura da via (maxheight)
+    - Peso do veículo > limite de peso da via (maxweight)
+    - hgv = "no" (veículos pesados proibidos)
+    - access = "private" ou "no" (para caminhões)
+
+  → PENALIDADES (o caminho ainda é possível, mas desestimulado):
+    - hgv = "destination": × 2.0 (só para destinos locais)
+    - access = "delivery":  × 1.5 (apenas para entregas)
+
+  Resultado: o algoritmo literalmente ignora (remove) do grafo qualquer
+  trecho que o caminhão não pode fisicamente ou legalmente percorrer.
+  A rota resultante é garantidamente transitável para o veículo informado.
+
+  NOTA: Este critério só é calculado quando o veículo selecionado é um
+  caminhão. Para carros e motos, apenas os três critérios anteriores
+  são calculados.
+
+================================================================================
+  PARTE 5 — COMO O PESO DETERMINA A ROTA ESCOLHIDA
+================================================================================
+
+Após calcular o peso de cada aresta para um determinado critério, o sistema
+cria uma versão "ponderada" do grafo. Esse processo é feito em
+`routing.py → _create_weighted_graph()`.
+
+Em seguida, aplica o algoritmo de MENOR CAMINHO de Dijkstra (via NetworkX):
+  nx.shortest_path(grafo, source="origin", target="destination", weight="weight")
+
+Dijkstra encontra o caminho com a MENOR SOMA DE PESOS entre origem e destino.
+
+O sistema faz isso 3 ou 4 vezes (um por critério), cada vez com um conjunto
+diferente de pesos. Por isso o sistema retorna múltiplas rotas — uma para
+cada otimização.
+
+================================================================================
+  PARTE 6 — ALERTAS GERADOS AO LONGO DA ROTA
+================================================================================
+
+Além do peso (que guia a escolha do caminho), o sistema também gera
+ALERTAS para informar o motorista sobre condições específicas encontradas
+nos trechos da rota escolhida.
+
+Os alertas têm três níveis de severidade:
+
+  🟢 VERDE (green)  — Informativo positivo
+  🟡 AMARELO (yellow) — Atenção / cuidado recomendado
+  🔴 VERMELHO (red)   — Problema sério / restrição crítica
+
+TIPOS DE ALERTA:
+
+  SUPERFÍCIE:
+    - Amarelo: superfície sem asfalto (unpaved, dirt, gravel)
+    - Vermelho: superfície muito ruim (mud, sand) — gerado duas vezes
+                se a condição se encaixar nos dois critérios
+
+  SUAVIDADE:
+    - Amarelo: "bad" ou "very_bad"
+    - Vermelho: "horrible", "very_horrible" ou "impassable"
+
+  SEGURANÇA (serviços automotivos):
+    - Verde: há posto de combustível E oficina próximos
+    - Verde: há só posto de combustível próximo
+    - Verde: há só oficina mecânica próxima
+    - Amarelo: nenhum serviço a menos de 500 metros
+
+  VELOCIDADE:
+    - Amarelo: limite de velocidade acima de 100 km/h
+
+  RESTRIÇÕES DE CAMINHÃO (apenas para veículos tipo truck):
+    - Vermelho: altura do veículo excede o limite da via
+    - Amarelo: altura do veículo está entre 90% e 100% do limite
+    - Vermelho: peso excede o limite
+    - Amarelo: peso está entre 90% e 100% do limite
+    - Vermelho: via proibida para HGV (veículos pesados)
+    - Amarelo: via de destino local apenas para HGV
+    - Vermelho: acesso "private" ou "no"
+    - Amarelo: acesso "delivery" ou "destination"
+
+DEDUPLICAÇÃO:
+  Alertas repetidos (mesma mensagem) são consolidados em um único.
+  Os alertas são ordenados por severidade (vermelho > amarelo > verde)
+  e limitados a no máximo 10 por rota.
+
+================================================================================
+  PARTE 7 — FLUXO COMPLETO DE UMA REQUISIÇÃO DE ROTA
+================================================================================
+
+  [FRONTEND - Streamlit]
+     ↓ Usuário preenche: origem, destino, tipo de veículo, critério
+     ↓ Frontend geocodifica os endereços (ORS Geocoding API)
+     ↓ Frontend captura o estado (UF) da origem para a API de combustível
+
+  [REQUISIÇÃO HTTP POST → /route/calculate]
+     ↓ Enviado ao backend FastAPI com:
+       { origin: {lat, lon}, destination: {lat, lon}, vehicle: {vehicle_type} }
+
+  [BACKEND - FastAPI / routes.py]
+     ↓ Valida as coordenadas recebidas
+     ↓ Chama routing_service.calculate_routes()
+
+  [routing.py → calculate_routes()]
+     ↓ overpass.calculate_bbox()    → Calcula a área de busca
+     ↓ overpass.query_osm_data()    → Baixa ruas + postos + oficinas do OSM
+     ↓ scorer.set_automotive_services()  → Constrói as KDTrees de serviços
+     ↓ overpass.build_graph()       → Monta o grafo de ruas (NetworkX)
+
+     Para cada critério (fastest, best_surface, safest, [truck_compatible]):
+       ↓ _create_weighted_graph()   → Pondera arestas com calculate_edge_weight()
+       ↓ nx.shortest_path()         → Dijkstra encontra o menor caminho
+       ↓ Acumula distância total, geometria e gera alertas por trecho
+       ↓ _deduplicate_alerts()      → Remove alertas duplicados
+
+     ↓ Retorna lista de objetos Route
+
+  [RESPOSTA HTTP 200]
+     ↓ JSON com todas as rotas calculadas
+
+  [FRONTEND - Streamlit]
+     ↓ Exibe a rota do critério selecionado pelo usuário no mapa (Folium)
+     ↓ Exibe tabela comparando todas as rotas (distância, alerts)
+     ↓ Consulta API de preços ANP para o estado de origem
+     ↓ Exibe painel de custo estimado de combustível
+
+================================================================================
+  PARTE 8 — RESUMO DOS PARÂMETROS AJUSTÁVEIS
+================================================================================
+
+Todos os parâmetros numéricos do sistema estão centralizados em:
+  app/utils/osm_weights.py
+
+Para ajustar o comportamento do sistema sem mexer na lógica, basta
+modificar os valores nesse arquivo:
+
+  HIGHWAY_WEIGHTS       → Penalidades por tipo de via
+  SURFACE_WEIGHTS       → Penalidades por tipo de superfície
+  SMOOTHNESS_WEIGHTS    → Penalidades por qualidade de conservação
+  TRACKTYPE_WEIGHTS     → Penalidades por grau de terra batida
+  SERVICE_PROXIMITY_FACTORS → Bônus/penalidades por serviços próximos
+  CRITERIA_MULTIPLIERS  → Pesos de cada componente para cada critério
+  DEFAULTS              → Valores padrão quando a tag OSM está ausente
+
+  Raio de proximidade de serviços: ScoringService.SERVICE_RADIUS_KM = 0.5 km
+  (definido diretamente na classe ScoringService em scoring.py)
+
+================================================================================
+  FIM DO DOCUMENTO
+================================================================================

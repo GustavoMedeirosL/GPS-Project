@@ -11,13 +11,19 @@ import requests
 import logging
 import time
 from typing import Optional, Dict, Any, Tuple
+import sys
+import os
+
+# Garante que o diretório-pai (frontend/) esteja no path para importar config
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import config
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# URL base da API de preços ANP
+# URL base da API de preços ANP — fonte única: config.py
 # ---------------------------------------------------------------------------
-GAS_PRICES_API_URL = "https://gas-prices-api-project.onrender.com"
+GAS_PRICES_API_URL = config.GAS_API_URL
 
 # ---------------------------------------------------------------------------
 # Mapeamento: nome completo do estado → sigla UF
@@ -113,21 +119,29 @@ CONSUMO_MEDIO: Dict[str, float] = {
 def health_check(timeout: int = 8) -> Tuple[bool, str]:
     """
     Verifica se a API de preços ANP está disponível.
+    Usa GET em /combustiveis — endpoint leve, sem side-effects.
 
     Returns:
         (True, "") se respondeu OK.
         (False, motivo) em caso de falha.
     """
+    url = f"{GAS_PRICES_API_URL}/combustiveis"
     try:
-        response = requests.get(f"{GAS_PRICES_API_URL}/combustiveis", timeout=timeout)
+        logger.debug("[fuel_service] health_check → GET %s (timeout=%ds)", url, timeout)
+        response = requests.get(url, timeout=timeout, headers={"Cache-Control": "no-store"})
         if response.status_code == 200:
+            logger.debug("[fuel_service] health_check OK (HTTP 200)")
             return True, ""
+        logger.warning("[fuel_service] health_check falhou: HTTP %d", response.status_code)
         return False, f"HTTP {response.status_code}"
     except requests.exceptions.ConnectionError as e:
+        logger.warning("[fuel_service] health_check: conexão recusada — %s", e)
         return False, f"Conexão recusada / URL inválida: {e}"
     except requests.exceptions.Timeout:
+        logger.info("[fuel_service] health_check: timeout (servidor inicializando)")
         return False, "Timeout (servidor ainda inicializando)"
     except Exception as e:  # pylint: disable=broad-except
+        logger.error("[fuel_service] health_check: erro inesperado — %s", e)
         return False, f"Erro inesperado: {e}"
 
 
@@ -135,6 +149,9 @@ def wake_up(max_wait_seconds: int = 180, poll_interval: int = 5) -> Tuple[bool, 
     """
     Acorda a API de preços ANP no Render (cold start), aguardando até
     max_wait_seconds antes de desistir.
+
+    Dispara requisições GET leves (/combustiveis) em paralelo com a UI —
+    nunca bloqueia o thread principal da aplicação.
 
     Args:
         max_wait_seconds: Tempo máximo de espera em segundos (default: 180s).
@@ -144,15 +161,36 @@ def wake_up(max_wait_seconds: int = 180, poll_interval: int = 5) -> Tuple[bool, 
         (True, "") se o servidor acordou.
         (False, último_motivo) se o tempo esgotou.
     """
+    logger.info(
+        "[fuel_service] Iniciando wake-up da API ANP → %s (max=%ds, poll=%ds)",
+        GAS_PRICES_API_URL, max_wait_seconds, poll_interval,
+    )
     elapsed = 0
+    attempt = 0
     last_detail = "Nenhuma tentativa realizada"
     while elapsed < max_wait_seconds:
+        attempt += 1
         ok, detail = health_check(timeout=poll_interval)
         if ok:
+            logger.info(
+                "[fuel_service] API ANP acordou após %ds (%d tentativa(s)).",
+                elapsed, attempt,
+            )
             return True, ""
         last_detail = detail
+        logger.info(
+            "[fuel_service] Tentativa %d/%d falhou (%ds decorridos): %s",
+            attempt,
+            max_wait_seconds // poll_interval,
+            elapsed,
+            detail,
+        )
         time.sleep(poll_interval)
         elapsed += poll_interval
+    logger.warning(
+        "[fuel_service] API ANP não respondeu após %ds. Último erro: %s",
+        max_wait_seconds, last_detail,
+    )
     return False, last_detail
 
 def normalize_state_to_uf(state_text: Optional[str]) -> Optional[str]:
