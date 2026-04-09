@@ -7,7 +7,7 @@ import streamlit as st
 from streamlit_folium import folium_static
 import sys
 import os
-import threading
+import time
 import requests
 
 # Adicionar diretório frontend ao path
@@ -46,14 +46,38 @@ st.set_page_config(
 )
 
 
+@st.cache_resource(show_spinner=False)
+def _cached_warmup_backend(backend_url: str, max_wait: int, poll: int) -> bool:
+    """
+    Executa o wake-up do back-end UMA única vez por ciclo de vida da app
+    (st.cache_resource persiste enquanto o processo Streamlit estiver ativo).
+    Bloqueia a thread do cache até o back-end responder ou o timeout estourar.
+    """
+    client = BackendClient(base_url=backend_url)
+    ok, _ = client.wake_up(max_wait_seconds=max_wait, poll_interval=poll)
+    return ok
+
+
+@st.cache_resource(show_spinner=False)
+def _cached_warmup_fuel(max_wait: int, poll: int) -> bool:
+    """
+    Executa o wake-up da API de combustíveis UMA única vez por ciclo de vida.
+    """
+    ok, _ = fuel_service.wake_up(max_wait_seconds=max_wait, poll_interval=poll)
+    return ok
+
+
 def initialize_services():
     """
-    Inicializa os serviços necessários e dispara o warm-up de AMBAS as
-    APIs remotas em background (evita cold start bloqueante).
+    Inicializa os serviços e garante o warm-up confiável de AMBAS as APIs
+    remotas usando st.cache_resource.
 
-    As duas threads são iniciadas simultaneamente na primeira carga:
-      • openroute-backend.onrender.com  → wake-up do back-end de rotas
-      • gas-prices-api-project.onrender.com → wake-up da API de preços ANP
+    Por que st.cache_resource em vez de threads daemon?
+      • Threads daemon morrem silenciosamente no Render / Streamlit Cloud.
+      • cache_resource executa o bloco UMA vez por processo e cacheia o resultado,
+        garantindo que a requisição HTTP realmente chegue ao back-end.
+      • Na primeira visita um spinner bloqueia brevemente; nas visitas seguintes
+        o resultado já está cacheado e é imediato.
 
     Returns:
         Tuple com (geocoding_service, backend_client)
@@ -64,35 +88,26 @@ def initialize_services():
     if 'backend_client' not in st.session_state:
         st.session_state.backend_client = BackendClient(base_url=config.BACKEND_URL)
 
-    # ── Wake-up do BACK-END (openroute-backend.onrender.com) ─────────────────
+    # ── Wake-up do BACK-END ──────────────────────────────────────────────────
     if 'backend_warmup_done' not in st.session_state:
-        st.session_state.backend_warmup_done = False
-        st.session_state.backend_warmup_ok = False
-
-        def _warmup_backend():
-            ok, _ = st.session_state.backend_client.wake_up(
-                max_wait_seconds=config.WAKEUP_MAX_WAIT,
-                poll_interval=config.WAKEUP_POLL_INTERVAL,
+        with st.spinner("⏳ Acordando o servidor de rotas (cold start)..."):
+            ok = _cached_warmup_backend(
+                config.BACKEND_URL,
+                config.WAKEUP_MAX_WAIT,
+                config.WAKEUP_POLL_INTERVAL,
             )
-            st.session_state.backend_warmup_ok = ok
-            st.session_state.backend_warmup_done = True
+        st.session_state.backend_warmup_ok = ok
+        st.session_state.backend_warmup_done = True
 
-        threading.Thread(target=_warmup_backend, daemon=True).start()
-
-    # ── Wake-up da API de preços ANP (gas-prices-api-project.onrender.com) ───
+    # ── Wake-up da API de preços ANP ─────────────────────────────────────────
     if 'fuel_api_warmup_done' not in st.session_state:
-        st.session_state.fuel_api_warmup_done = False
-        st.session_state.fuel_api_ok = False
-
-        def _warmup_fuel_api():
-            ok, _ = fuel_service.wake_up(
-                max_wait_seconds=config.WAKEUP_MAX_WAIT,
-                poll_interval=config.WAKEUP_POLL_INTERVAL,
+        with st.spinner("⏳ Acordando a API de preços de combustível..."):
+            ok = _cached_warmup_fuel(
+                config.WAKEUP_MAX_WAIT,
+                config.WAKEUP_POLL_INTERVAL,
             )
-            st.session_state.fuel_api_ok = ok
-            st.session_state.fuel_api_warmup_done = True
-
-        threading.Thread(target=_warmup_fuel_api, daemon=True).start()
+        st.session_state.fuel_api_ok = ok
+        st.session_state.fuel_api_warmup_done = True
 
     return st.session_state.geocoding_service, st.session_state.backend_client
 

@@ -4,6 +4,7 @@ OpenRoute Navigator - Overpass API Service
 Handles OSM data retrieval via Overpass API
 """
 
+import time
 import requests
 import networkx as nx
 from typing import Dict, List, Tuple, Optional
@@ -13,10 +14,21 @@ from app.models.schemas import Coordinates
 class OverpassService:
     """Service for querying OpenStreetMap data via Overpass API"""
     
-    def __init__(self):
-        self.base_url = "https://overpass-api.de/api/interpreter"
-        self.timeout = 180
+    # Public Overpass API mirrors — tried in order until one succeeds
+    ENDPOINTS = [
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+        "https://maps.mail.ru/osm/tools/overpass/api/interpreter",
+    ]
 
+    # Timeout sent inside the QL query (servers must respect it)
+    QUERY_TIMEOUT = 60  # seconds
+
+    # HTTP-level timeout: slightly above the QL timeout so the server
+    # has time to return its own error message instead of a silent hang.
+    HTTP_TIMEOUT = QUERY_TIMEOUT + 15  # seconds
+
+    def __init__(self):
         # Cached list of automotive service locations (lat, lon, type)
         # Populated after query_osm_data() is called via query_automotive_services()
         self.fuel_stations: List[Tuple[float, float]] = []
@@ -40,7 +52,7 @@ class OverpassService:
         min_lat, min_lon, max_lat, max_lon = bbox
 
         query = f"""
-        [out:json][timeout:{self.timeout}];
+        [out:json][timeout:{self.QUERY_TIMEOUT}];
         (
           // ── Road network ──────────────────────────────────────────
           way["highway"]
@@ -68,7 +80,7 @@ class OverpassService:
         self,
         origin: Coordinates,
         destination: Coordinates,
-        padding: float = 0.05
+        padding: float = 0.02
     ) -> Tuple[float, float, float, float]:
         """
         Calculate bounding box from origin and destination
@@ -94,6 +106,9 @@ class OverpassService:
         API request. Automotive service locations are parsed here and stored
         in self.fuel_stations / self.repair_shops for use by ScoringService.
 
+        Tries each mirror in ENDPOINTS in order and retries up to 3 times
+        with a short back-off before giving up.
+
         Args:
             bbox: Bounding box for query
 
@@ -102,25 +117,60 @@ class OverpassService:
         """
         query = self.build_query(bbox)
 
-        try:
-            response = requests.post(
-                self.base_url,
-                data={"data": query},
-                timeout=self.timeout + 10
-            )
-            response.raise_for_status()
-            osm_data = response.json()
+        last_error: Exception = Exception("No Overpass endpoints available")
 
-        except requests.exceptions.Timeout:
-            raise Exception("Overpass API timeout - try a smaller area")
-        except requests.exceptions.RequestException as e:
-            raise Exception(f"Overpass API error: {e}")
+        for endpoint in self.ENDPOINTS:
+            for attempt in range(1, 4):  # 3 attempts per endpoint
+                try:
+                    response = requests.post(
+                        endpoint,
+                        data={"data": query},
+                        timeout=self.HTTP_TIMEOUT,
+                    )
 
-        # Parse automotive service locations from the same response.
-        # POI nodes carry amenity/shop tags; road nodes do not.
-        self._extract_automotive_services(osm_data)
+                    # 429 = rate-limited, 504 = gateway timeout → retry
+                    if response.status_code in (429, 504):
+                        wait = attempt * 2  # 2s, 4s, 6s
+                        print(
+                            f"[OverpassService] {endpoint} returned HTTP "
+                            f"{response.status_code} (attempt {attempt}/3). "
+                            f"Retrying in {wait}s..."
+                        )
+                        time.sleep(wait)
+                        last_error = Exception(
+                            f"Overpass API unavailable (HTTP {response.status_code}). "
+                            "The public OSM servers are temporarily overloaded — "
+                            "please try again in a few moments."
+                        )
+                        continue
 
-        return osm_data
+                    response.raise_for_status()
+                    osm_data = response.json()
+
+                    # Parse automotive service locations from the same response.
+                    self._extract_automotive_services(osm_data)
+                    return osm_data
+
+                except requests.exceptions.Timeout:
+                    last_error = Exception(
+                        "Overpass API timed out. Try a smaller area or retry later."
+                    )
+                    print(
+                        f"[OverpassService] {endpoint} timed out "
+                        f"(attempt {attempt}/3)."
+                    )
+                    time.sleep(attempt * 2)
+                    continue
+
+                except requests.exceptions.RequestException as exc:
+                    last_error = Exception(f"Overpass API network error: {exc}")
+                    print(
+                        f"[OverpassService] {endpoint} network error: {exc} "
+                        f"(attempt {attempt}/3)."
+                    )
+                    break  # Network error on this endpoint — try next mirror
+
+        raise last_error
 
     def _extract_automotive_services(self, osm_data: Dict) -> None:
         """
